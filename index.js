@@ -35,6 +35,7 @@ async function main() {
     // INIT SECTION
 
     // Init the client and target the testnet network:
+    const coreum = new Client({ network: network }); // Other values are "devnet" and "mainnet"
 
     let issuerMnemonic = await getUserInput("Enter your mnemonic: ");
 
@@ -44,6 +45,7 @@ async function main() {
     }
 
     // Access the private key of the mnemonic.
+    await coreum.connectWithMnemonic(issuerMnemonic);
 
     // Let's store the mnemonic bank address to the variable(the Client instance saves the address of the connected account for easy access)
     const issuer = coreum.address;
@@ -74,6 +76,7 @@ async function main() {
       // Defining the functions we are going to use:
 
       async function checkAllBalances() {
+        const balance = await bank.allBalances(issuer);
         console.log(`balance: `, balance);
       }
 
@@ -85,6 +88,8 @@ async function main() {
         subunit = await getUserInput("Enter the subunit of your token: ").then(
           (input) => input.trim()
         );
+
+        ftDenom = `${subunit}-${issuer}`;
 
         const minting = await getUserInput("Press y to enable minting: ").then(
           (input) => input.trim()
@@ -108,7 +113,39 @@ async function main() {
 
         const features = [];
 
+        if (minting === "y") {
+          features.push(Feature.minting);
+        }
+        if (burning === "y") {
+          features.push(Feature.burning);
+        }
+        if (freezing === "y") {
+          features.push(Feature.freezing);
+        }
+        if (whitelisting === "y") {
+          features.push(Feature.whitelisting);
+        }
+        if (ibc === "y") {
+          features.push(Feature.ibc);
+        }
+
+        const issueFtMsg = FT.Issue({
+          issuer: issuer,
+          symbol: symbol,
+          subunit: subunit,
+          precision: "6",
+          initialAmount: "100000000",
+          description: "Test message in description",
+          // To get valid values for the features go inside "Issue" object and then click at "token" within "./asset/ft/v1/token" path.
+          features: features,
+          uri: "https://google.com",
+          uriHash: "test string uri hash",
+        });
+
+        console.log("issueFtMsg: ", issueFtMsg);
+
         // Let's broadcast our issueFtMsg message and check the response:
+        const issueFtResponse = await coreum.sendTx([issueFtMsg]);
         console.log("issueFtResponse: ", issueFtResponse);
       }
 
@@ -121,6 +158,17 @@ async function main() {
           (input) => input.trim()
         );
 
+        const coinDenom = `${subunit}-${issuer}`;
+
+        const mintFtMsg = FT.Mint({
+          sender: issuer,
+          coin: {
+            denom: coinDenom || ftDenom,
+            amount: amount,
+          },
+        });
+
+        const mintBroadcastResponse = await coreum.sendTx([mintFtMsg]);
         console.log("mintBroadcastResponse: ", mintBroadcastResponse);
       }
 
@@ -129,6 +177,23 @@ async function main() {
           "Enter the amount of tokens you want to burn: "
         ).then((input) => input.trim());
 
+        const subunit = await getUserInput("Enter the subunit: ").then(
+          (input) => input.trim()
+        );
+
+        const coinDenom = `${subunit}-${issuer}`;
+
+        const burnFtMsg = FT.Burn({
+          sender: issuer,
+          coin: {
+            denom: coinDenom || ftDenom,
+            amount: amount,
+          },
+        });
+
+        console.log("burnFtMsg: ", burnFtMsg);
+
+        const burnBroadcastResponse = await coreum.sendTx([burnFtMsg]);
         console.log("burnBroadcastResponse: ", burnBroadcastResponse);
       }
 
@@ -137,10 +202,19 @@ async function main() {
           "Enter the subunit of your token: "
         ).then((input) => input.trim());
 
+        const denom = `${tokenSubunit ?? subunit}-${issuer}`;
+
+        const tokenDetails = await ft.token(denom);
         console.log(`tokenDetails: `, tokenDetails);
       }
 
-      async function getTokenSupply(tokenSubunit, tokenIssuer) {}
+      async function getTokenSupply(tokenSubunit, tokenIssuer) {
+        const denom = `${tokenSubunit}-${tokenIssuer ?? issuer}`;
+
+        const tokenSupply = await coreum.queryClients.bank.supplyOf(denom);
+
+        return tokenSupply;
+      }
 
       async function sendFT() {
         const receiver = await getUserInput(
@@ -150,6 +224,11 @@ async function main() {
         const subunit = await getUserInput(
           "Enter the subunit of the token you want to send: "
         ).then((input) => input.trim());
+
+        const checkWhitelisting = await ft.whitelistedBalance(
+          receiver,
+          `${subunit}-${issuer}`
+        );
 
         if (checkWhitelisting.balance.amount === "0") {
           console.log("The receiver address is not whitelisted");
@@ -165,10 +244,24 @@ async function main() {
           "Enter the amount of tokens you want to send: "
         ).then((input) => input.trim());
 
+        const sendFtMsg = Bank.Send({
+          fromAddress: issuer,
+          toAddress: receiver,
+          amount: [
+            {
+              denom: `${subunit}-${issuer}`,
+              // amount is defined in subunits, taking the precision into an account we are sending 1MYFT token
+              amount: amount,
+            },
+          ],
+        });
+
+        const sendBroadcastResponse = await coreum.sendTx([sendFtMsg]);
         console.log("sendBroadcastResponse: ", sendBroadcastResponse);
       }
 
       async function getAccountTokens() {
+        const accountTokens = await ft.tokens(issuer);
         console.log("ACCOUNT TOKENS", accountTokens);
       }
 
@@ -181,6 +274,23 @@ async function main() {
         );
         const classSymbol = await getUserInput("Enter the class symbol: ");
 
+        const createClassObj = {
+          description: description,
+          features: [
+            ClassFeature.burning,
+            ClassFeature.freezing,
+            ClassFeature.whitelisting,
+            ClassFeature.disable_sending,
+          ],
+          issuer: issuer,
+          name: className,
+          royaltyRate: "0",
+          symbol: classSymbol,
+          uri: "",
+          uriHash: "",
+        };
+        const createClassMesg = NFT.IssueClass(createClassObj);
+        const classCreateRes = await coreum.sendTx([createClassMesg]);
         console.log("classCreateRes", classCreateRes);
       }
 
@@ -190,11 +300,27 @@ async function main() {
 
         const nftId = await getUserInput("Enter the NFT ID: ");
 
+        const mintNFTObj = {
+          classId: `${classId}-${issuer}`,
+          // data: "test",
+          id: nftId,
+          sender: issuer,
+          uri: "",
+          uriHash: "",
+        };
+        const mintNFTMesg = NFT.Mint(mintNFTObj);
+        const mintNFTRes = await coreum.sendTx([mintNFTMesg]);
         console.log("NFT MINTED", mintNFTRes);
       }
 
       async function getAllAccountNFT() {
         const classId = await getUserInput("Enter the class ID: ");
+        const nftClassId = `${classId}-${issuer}`;
+
+        const addressNFTs = await coreum.queryClients.nftbeta.nfts(
+          nftClassId,
+          issuer
+        );
         console.log("ADDRESS NFTS", addressNFTs);
       }
 
@@ -207,6 +333,8 @@ async function main() {
           "Enter the subunit of the token you want to whitelist: "
         ).then((input) => input.trim());
 
+        const tokenBalance = await getTokenSupply(subunit);
+
         console.log(
           "The token balance, and maximum amount you can whitelist is: ",
           tokenBalance.amount
@@ -215,6 +343,24 @@ async function main() {
         const amount = await getUserInput(
           "Enter the amount of tokens you want to whitelist: "
         ).then((input) => input.trim());
+
+        const denom = `${subunit}-${issuer}`;
+
+        const setWhitelistLimitMsg = FT.SetWhitelistedLimit({
+          sender: issuer,
+          account: address,
+          coin: {
+            denom: denom,
+            amount: amount,
+          },
+        });
+
+        const setWhitelistLimitResponse = await coreum.sendTx([
+          setWhitelistLimitMsg,
+        ]);
+        console.log("setWhitelistLimitResponse: ", setWhitelistLimitResponse);
+
+        const whitelistedBalance = await ft.whitelistedBalance(address, denom);
 
         console.log(
           "The new whitelisted balance is: ",
